@@ -3,13 +3,13 @@ kind: Ingress
 metadata:
   name: user-ingress
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /users
+    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   rules:
     - host: user-service.local
       http:
         paths:
-          - path: /
+          - path: /users
             pathType: Prefix
             backend:
               service:
