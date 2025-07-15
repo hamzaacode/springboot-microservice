@@ -1,0 +1,41 @@
+name: Deploy Order Service to Minikube
+
+on:
+  push:
+    paths:
+      - 'order-service/**'
+      - '.github/workflows/deploy-order.yml'
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted  # Local runner with minikube & docker installed
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Build order-service JAR
+        run: |
+          cd order-service
+          mvn clean package -DskipTests
+
+      - name: Use Minikube Docker daemon
+        run: eval $(minikube docker-env)
+
+      - name: Build Docker image for order-service
+        run: |
+          cd order-service
+          docker build -t order-service:latest .
+
+      - name: Deploy to Minikube
+        run: |
+          kubectl apply -f order-service/order-deployment.yml
+          kubectl apply -f order-service/order-service.yml
