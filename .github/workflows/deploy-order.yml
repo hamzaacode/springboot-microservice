@@ -27,7 +27,10 @@ jobs:
       - name: Build Docker image for order-service
         run: |
           cd order-service
-          docker build -t order-service:latest .
+          docker build --no-cache -t order-service:latest .
+
+      - name: Force K8s to use new image
+        run: kubectl rollout restart deployment order-deployment
 
       - name: Deploy to Minikube
         run: |
