@@ -6,7 +6,7 @@ on:
       - 'order-service/**'
       - '.github/workflows/deploy-order.yml'
     branches:
-      - main
+      - kubernates-deployment-fix
 
 jobs:
   build-and-deploy:
