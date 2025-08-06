@@ -1,6 +1,7 @@
 name: Deploy Order Service to Minikube
 
 on:
+  workflow_dispatch:  # Enables manual trigger from any branch
   push:
     paths:
       - 'order-service/**'
