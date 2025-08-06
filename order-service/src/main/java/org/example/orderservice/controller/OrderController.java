@@ -18,7 +18,7 @@ public class OrderController {
 
     @GetMapping("/orders")
     public OrderResponse getOrders() {
-        log.info("Get order list successful");
+        log.info("Get order list successfully");
         List<String> orders = List.of("Order 1", "Order 2", "Order 3");
         return new OrderResponse(
                 "Fetched order list successfully",
