@@ -3,8 +3,8 @@ name: Deploy Order Service to Minikube
 on:
   push:
     paths:
-      - 'order-service/**'
-      - '.github/workflows/deploy-order.yml'
+      - 'eureka-server/**'
+      - 'order-service-ci-cd.yml'
     branches:
       - kubernates-deployment-fix
 
@@ -16,23 +16,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Build order-service JAR
+      - name: Build eureka-service JAR
         run: |
-          cd order-service
+          cd eureka-service
           mvn clean package -DskipTests
 
       - name: Use Minikube Docker daemon
         run: eval $(minikube docker-env)
 
-      - name: Build Docker image for order-service
+      - name: Build Docker image for eureka-service
         run: |
-          cd order-service
-          docker build --no-cache -t order-service:latest .
+          cd eureka-service
+          docker build --no-cache -t eureka-server:latest .
 
       - name: Force K8s to use new image
-        run: kubectl rollout restart deployment order-deployment
+        run: kubectl rollout restart deployment eureka-deployment
 
       - name: Deploy to Minikube
         run: |
-          kubectl apply -f order-service/order-deployment.yml
-          kubectl apply -f order-service/order-service.yml
+          kubectl apply -f eureka-service/eureka-deployment.yml
+          kubectl apply -f eureka-service/eureka-service.yml
