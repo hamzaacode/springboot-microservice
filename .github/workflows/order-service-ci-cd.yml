@@ -29,10 +29,15 @@ jobs:
           cd order-service
           docker build --no-cache -t order-service:latest .
 
-      - name: Force K8s to use new image
-        run: kubectl rollout restart deployment order-deployment
-
       - name: Deploy to Minikube
         run: |
           kubectl apply -f order-service/order-deployment.yml
           kubectl apply -f order-service/order-service.yml
+
+      - name: Force K8s to use new image
+        run: |
+          if kubectl get deployment order-deployment; then
+            kubectl rollout restart deployment order-deployment
+          else
+            echo "Deployment not found. Skipping rollout restart."
+          fi
