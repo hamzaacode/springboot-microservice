@@ -21,11 +21,14 @@ jobs:
           cd order-service
           mvn clean package -DskipTests
 
-      - name: Use Minikube Docker daemon
-        run: eval $(minikube docker-env)
-
-      - name: Build Docker image for order-service
+      - name: Build JAR
         run: |
+          cd order-service
+          mvn clean package -DskipTests
+
+      - name: Build Docker image in Minikube Docker
+        run: |
+          eval $(minikube docker-env)
           cd order-service
           docker build --no-cache -t order-service:latest .
 
