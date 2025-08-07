@@ -1,6 +1,5 @@
 package org.example.orderservice.controller;
 
-import lombok.extern.slf4j.Slf4j;
 import org.example.orderservice.dto.OrderResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
