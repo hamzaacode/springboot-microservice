@@ -2,9 +2,9 @@ name: Deploy eureka Service to Minikube
 
 on:
   push:
-    paths:
-      - 'eureka-server/**'
-      - 'order-service-ci-cd.yml'
+    #paths:
+    #  - 'eureka-server/**'
+     # - 'order-service-ci-cd.yml'
     branches:
       - kubernates-deployment-fix
 
