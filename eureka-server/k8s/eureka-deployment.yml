@@ -15,6 +15,14 @@ spec:
       containers:
         - name: eureka-service
           image: eureka-service:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8761
-          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            httpGet: { path: "/", port: 8761 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: "/", port: 8761 }
+            initialDelaySeconds: 30
+            periodSeconds: 10

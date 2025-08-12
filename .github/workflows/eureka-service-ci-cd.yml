@@ -2,9 +2,13 @@ name: Deploy Eureka to Minikube
 
 on:
   push:
-    branches:
-      - kubernates-deployment-fix
+    branches: [ kubernates-deployment-fix ]
   workflow_dispatch:
+
+env:
+  SERVICE_DIR: eureka-server
+  IMAGE_TAG: eureka-service:latest              # must match Deployment
+  DEPLOY_DIR: eureka-server/k8s                 # where the YAMLs live
 
 concurrency:
   group: eureka-deploy
@@ -27,32 +31,34 @@ jobs:
           kubectl config use-context minikube
           minikube status
 
-      - name: Build JAR
+      - name: Build fat JAR
         shell: bash
         run: |
           set -euxo pipefail
-          cd eureka-service
+          cd "$SERVICE_DIR"
           mvn -q -DskipTests clean package
 
-      # Build the image directly into Minikube’s Docker daemon
       - name: Build image into Minikube
         shell: bash
         run: |
           set -euxo pipefail
-          # IMPORTANT: tag matches Deployment's image
-          minikube image build -t eureka-service:latest eureka-service
+          # Build using the Dockerfile inside the service dir
+          minikube image build -t "$IMAGE_TAG" -f "$SERVICE_DIR/Dockerfile" "$SERVICE_DIR"
+          # Prove it's there
+          minikube image ls | grep "${IMAGE_TAG%%:*}" || true
 
       - name: Apply manifests
         shell: bash
         run: |
           set -euxo pipefail
-          kubectl apply -f eureka-service/eureka-deployment.yml
-          kubectl apply -f eureka-service/eureka-service.yml
+          kubectl apply -f "$DEPLOY_DIR/eureka-deployment.yml"
+          kubectl apply -f "$DEPLOY_DIR/eureka-service.yml"
           kubectl rollout status deploy/eureka-deployment --timeout=180s
 
       - name: Post-deploy checks
         if: always()
         shell: bash
         run: |
-          kubectl get pods,svc
-          kubectl get events --sort-by=.lastTimestamp | tail -n 20
+          kubectl get pods -o wide
+          kubectl get svc -o wide
+          kubectl get events --sort-by=.lastTimestamp | tail -n 25

@@ -7,7 +7,6 @@ spec:
   selector:
     app: eureka-service
   ports:
-    - protocol: TCP
-      port: 8761
+    - port: 8761
       targetPort: 8761
-      nodePort: 30861
+      nodePort: 30861   # or let k8s choose
