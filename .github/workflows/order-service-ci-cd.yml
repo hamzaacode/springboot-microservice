@@ -11,7 +11,7 @@ on:
 
 env:
   SERVICE_DIR: order-service
-  IMAGE_TAG: order-service:latest
+  IMAGE_BASE: order-service
   DEPLOY_DIR: order-service/k8s
 
 concurrency:
@@ -46,15 +46,22 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          minikube image build -t "$IMAGE_TAG" -f "$SERVICE_DIR/Dockerfile" "$SERVICE_DIR"
+          TAG="${GITHUB_SHA}"
+          minikube image build \
+            -t "${IMAGE_BASE}:${TAG}" \
+            -t "${IMAGE_BASE}:latest" \
+            -f "${SERVICE_DIR}/Dockerfile" "${SERVICE_DIR}"
 
-      - name: Apply manifests
+      - name: Apply manifests and rollout
         shell: bash
         run: |
           set -euxo pipefail
-          kubectl apply -f "$DEPLOY_DIR/order-deployment.yml"
-          kubectl apply -f "$DEPLOY_DIR/order-service.yml"
-          kubectl rollout status deploy/order-deployment --timeout=180s
+          TAG="${GITHUB_SHA}"
+          kubectl apply -f "${SERVICE_DIR}/k8s/order-deployment.yml"
+          kubectl apply -f "${SERVICE_DIR}/k8s/order-service.yml"
+          # container name must match your Deployment's container name (order-service)
+          kubectl set image deployment/order-deployment order-service="${IMAGE_BASE}:${TAG}"
+          kubectl rollout status deploy/order-deployment --timeout=300s
 
       - name: Post-deploy checks
         if: always()
