@@ -6,8 +6,7 @@ on:
     paths:
       - 'order-service/**'
       - '.github/workflows/order-service-ci-cd.yml'
-      - 'shared/**'            # only if edits here should redeploy order
-    workflow_dispatch:
+  workflow_dispatch:
 
 env:
   SERVICE_DIR: order-service
@@ -33,7 +32,6 @@ jobs:
           docker info >/dev/null
           minikube status || minikube start --driver=docker
           kubectl config use-context minikube
-          minikube status
 
       - name: Build fat JAR
         shell: bash
@@ -52,38 +50,39 @@ jobs:
             -t "${IMAGE_BASE}:latest" \
             -f "${SERVICE_DIR}/Dockerfile" "${SERVICE_DIR}"
 
+          # ✅ make sure the node actually has the image
+          minikube image load "${IMAGE_BASE}:${TAG}"
+
+          # ✅ sanity checks (works for both containerd and docker runtimes)
+          echo "== images seen by minikube =="
+          minikube image ls | grep "${IMAGE_BASE}" || true
+          echo "== images on node via crictl =="
+          minikube ssh -- sudo crictl images | grep "${IMAGE_BASE}" || true
+
       - name: Apply manifests and rollout
         shell: bash
         run: |
           set -euxo pipefail
           TAG="${GITHUB_SHA}"
 
-          # Apply manifests
           kubectl apply -f "${SERVICE_DIR}/k8s/order-deployment.yml"
           kubectl apply -f "${SERVICE_DIR}/k8s/order-service.yml"
 
-          # Point deployment at the freshly built image (container name must match in YAML)
+          # point deployment at the freshly built image
           kubectl set image deployment/order-deployment \
             order-service="${IMAGE_BASE}:${TAG}"
 
-          # If an old pod is stuck terminating, show it and clear it (dev-friendly)
           echo "Pods before rollout:"
           kubectl get pods -l app=order-service -o wide || true
 
-          # Wait up to 5 minutes; on failure, dump describe/logs to pinpoint cause
           kubectl rollout status deploy/order-deployment --timeout=300s || {
-            echo "=== DESCRIBE DEPLOYMENT ==="
-            kubectl describe deploy/order-deployment
-            echo "=== REPLICASETS ==="
-            kubectl get rs -l app=order-service -o wide
-            echo "=== PODS (detailed) ==="
-            kubectl get pods -l app=order-service -o wide
-            POD=$(kubectl get pods -l app=order-service -o jsonpath='{.items[0].metadata.name}' || true)
+            echo "=== DEPLOYMENT ==="; kubectl describe deploy/order-deployment
+            echo "=== REPLICASETS ==="; kubectl get rs -l app=order-service -o wide
+            echo "=== PODS ==="; kubectl get pods -l app=order-service -o wide
+            POD=$(kubectl get pods -l app=order-service --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].0.metadata.name}' || true)
             if [ -n "${POD}" ]; then
-              echo "=== DESCRIBE POD ${POD} ==="
-              kubectl describe pod "${POD}"
-              echo "=== LOGS ${POD} (tail) ==="
-              kubectl logs "${POD}" --tail=200 || true
+              echo "=== DESCRIBE POD ${POD} ==="; kubectl describe pod "${POD}"
+              echo "=== LOGS ${POD} (tail) ==="; kubectl logs "${POD}" --tail=200 || true
             fi
             exit 1
           }
@@ -94,4 +93,3 @@ jobs:
         run: |
           kubectl get pods -o wide
           kubectl get svc -o wide
-          kubectl get events --sort-by=.lastTimestamp | tail -n 25
