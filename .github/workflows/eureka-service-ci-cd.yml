@@ -6,13 +6,13 @@ on:
     paths:
       - 'eureka-server/**'
       - '.github/workflows/eureka-service-ci-cd.yml'
-      - 'shared/**'            # optional: libs/config both services use
+      - 'shared/**'
     workflow_dispatch:
 
 env:
   SERVICE_DIR: eureka-server
-  IMAGE_TAG: eureka-service:latest              # must match Deployment
-  DEPLOY_DIR: eureka-server/k8s                 # where the YAMLs live
+  IMAGE_TAG: eureka-service:latest
+  DEPLOY_DIR: eureka-server/k8s
 
 concurrency:
   group: eureka-deploy
