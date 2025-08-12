@@ -6,8 +6,22 @@ spring:
     name: order-service
 
 eureka:
+  instance:
+    prefer-ip-address: true
+    hostname: ${HOSTNAME:}
+    instance-id: ${spring.application.name}:${HOSTNAME:${random.uuid}}
   client:
     register-with-eureka: true
     fetch-registry: true
     service-url:
       defaultZone: http://eureka-service:8761/eureka
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
