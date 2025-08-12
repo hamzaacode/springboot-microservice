@@ -2,37 +2,47 @@ name: Deploy eureka Service to Minikube
 
 on:
   push:
-    #paths:
-    #  - 'eureka-server/**'
-     # - 'order-service-ci-cd.yml'
     branches:
       - kubernates-deployment-fix
 
 jobs:
   build-and-deploy:
-    runs-on: self-hosted  # Local runner with minikube & docker installed
+    runs-on: self-hosted
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Ensure Minikube is running (Docker driver)
+        shell: bash
+        run: |
+          if ! minikube status >/dev/null 2>&1; then
+            minikube start --driver=docker
+          fi
+          kubectl config use-context minikube
+
+      # Persist Docker env for ALL following steps
+      - name: Point Docker CLI to Minikube’s daemon
+        shell: bash
+        run: |
+          minikube -p minikube docker-env --shell bash >> "$GITHUB_ENV"
 
       - name: Build eureka-service JAR
         run: |
           cd eureka-service
           mvn clean package -DskipTests
 
-      - name: Use Minikube Docker daemon
-        run: eval $(minikube docker-env)
-
-      - name: Build Docker image for eureka-service
+      - name: Build Docker image inside Minikube
         run: |
           cd eureka-service
-          docker build --no-cache -t eureka-server:latest .
+          docker build -t eureka-server:latest .
 
-      - name: Force K8s to use new image
-        run: kubectl rollout restart deployment eureka-deployment
-
-      - name: Deploy to Minikube
+      - name: Deploy manifests
         run: |
           kubectl apply -f eureka-service/eureka-deployment.yml
           kubectl apply -f eureka-service/eureka-service.yml
+          kubectl rollout status deployment/eureka-deployment --timeout=120s
+
+      - name: (Optional) Restart after deploy if needed
+        if: always()
+        run: kubectl rollout restart deployment eureka-deployment
