@@ -1,48 +1,58 @@
-name: Deploy eureka Service to Minikube
+name: Deploy Eureka to Minikube
 
 on:
   push:
     branches:
       - kubernates-deployment-fix
+  workflow_dispatch:
+
+concurrency:
+  group: eureka-deploy
+  cancel-in-progress: true
 
 jobs:
   build-and-deploy:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Ensure Minikube is running (Docker driver)
+      - name: Ensure Minikube (Docker driver) is running
         shell: bash
         run: |
-          if ! minikube status >/dev/null 2>&1; then
-            minikube start --driver=docker
-          fi
+          set -euxo pipefail
+          docker info >/dev/null
+          minikube status || minikube start --driver=docker
           kubectl config use-context minikube
+          minikube status
 
-      # Persist Docker env for ALL following steps
-      - name: Point Docker CLI to Minikube’s daemon
+      - name: Build JAR
         shell: bash
         run: |
-          minikube -p minikube docker-env --shell bash >> "$GITHUB_ENV"
-
-      - name: Build eureka-service JAR
-        run: |
+          set -euxo pipefail
           cd eureka-service
-          mvn clean package -DskipTests
+          mvn -q -DskipTests clean package
 
-      - name: Build Docker image inside Minikube
+      # Build the image directly into Minikube’s Docker daemon
+      - name: Build image into Minikube
+        shell: bash
         run: |
-          cd eureka-service
-          docker build -t eureka-server:latest .
+          set -euxo pipefail
+          # IMPORTANT: tag matches Deployment's image
+          minikube image build -t eureka-service:latest eureka-service
 
-      - name: Deploy manifests
+      - name: Apply manifests
+        shell: bash
         run: |
+          set -euxo pipefail
           kubectl apply -f eureka-service/eureka-deployment.yml
           kubectl apply -f eureka-service/eureka-service.yml
-          kubectl rollout status deployment/eureka-deployment --timeout=120s
+          kubectl rollout status deploy/eureka-deployment --timeout=180s
 
-      - name: (Optional) Restart after deploy if needed
+      - name: Post-deploy checks
         if: always()
-        run: kubectl rollout restart deployment eureka-deployment
+        shell: bash
+        run: |
+          kubectl get pods,svc
+          kubectl get events --sort-by=.lastTimestamp | tail -n 20
