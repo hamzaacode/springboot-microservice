@@ -57,11 +57,36 @@ jobs:
         run: |
           set -euxo pipefail
           TAG="${GITHUB_SHA}"
+
+          # Apply manifests
           kubectl apply -f "${SERVICE_DIR}/k8s/order-deployment.yml"
           kubectl apply -f "${SERVICE_DIR}/k8s/order-service.yml"
-          # container name must match your Deployment's container name (order-service)
-          kubectl set image deployment/order-deployment order-service="${IMAGE_BASE}:${TAG}"
-          kubectl rollout status deploy/order-deployment --timeout=300s
+
+          # Point deployment at the freshly built image (container name must match in YAML)
+          kubectl set image deployment/order-deployment \
+            order-service="${IMAGE_BASE}:${TAG}"
+
+          # If an old pod is stuck terminating, show it and clear it (dev-friendly)
+          echo "Pods before rollout:"
+          kubectl get pods -l app=order-service -o wide || true
+
+          # Wait up to 5 minutes; on failure, dump describe/logs to pinpoint cause
+          kubectl rollout status deploy/order-deployment --timeout=300s || {
+            echo "=== DESCRIBE DEPLOYMENT ==="
+            kubectl describe deploy/order-deployment
+            echo "=== REPLICASETS ==="
+            kubectl get rs -l app=order-service -o wide
+            echo "=== PODS (detailed) ==="
+            kubectl get pods -l app=order-service -o wide
+            POD=$(kubectl get pods -l app=order-service -o jsonpath='{.items[0].metadata.name}' || true)
+            if [ -n "${POD}" ]; then
+              echo "=== DESCRIBE POD ${POD} ==="
+              kubectl describe pod "${POD}"
+              echo "=== LOGS ${POD} (tail) ==="
+              kubectl logs "${POD}" --tail=200 || true
+            fi
+            exit 1
+          }
 
       - name: Post-deploy checks
         if: always()

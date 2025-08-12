@@ -1,27 +1,40 @@
-server:
-  port: 8081
-
-spring:
-  application:
-    name: order-service
-
-eureka:
-  instance:
-    prefer-ip-address: true
-    hostname: ${HOSTNAME:}
-    instance-id: ${spring.application.name}:${HOSTNAME:${random.uuid}}
-  client:
-    register-with-eureka: true
-    fetch-registry: true
-    service-url:
-      defaultZone: http://eureka-service:8761/eureka
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info
-  endpoint:
-    health:
-      probes:
-        enabled: true
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-deployment
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # allow creating the new pod BEFORE killing the old
+      maxUnavailable: 0    # keep service available during update
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      terminationGracePeriodSeconds: 15   # don't let shutdown hang forever
+      containers:
+        - name: order-service
+          image: order-service:latest     # CI will override with commit tag
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          # If you have Actuator:
+          readinessProbe:
+            httpGet: { path: "/actuator/health", port: 8081 }
+            initialDelaySeconds: 8
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: "/actuator/health", port: 8081 }
+            initialDelaySeconds: 25
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # If you DON'T have Actuator yet, temporarily change both probe paths to "/"
