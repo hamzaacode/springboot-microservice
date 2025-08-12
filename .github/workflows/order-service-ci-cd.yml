@@ -50,10 +50,10 @@ jobs:
             -t "${IMAGE_BASE}:latest" \
             -f "${SERVICE_DIR}/Dockerfile" "${SERVICE_DIR}"
 
-          # ✅ make sure the node actually has the image
+          # make sure the node actually has the image
           minikube image load "${IMAGE_BASE}:${TAG}"
 
-          # ✅ sanity checks (works for both containerd and docker runtimes)
+          # sanity checks
           echo "== images seen by minikube =="
           minikube image ls | grep "${IMAGE_BASE}" || true
           echo "== images on node via crictl =="
