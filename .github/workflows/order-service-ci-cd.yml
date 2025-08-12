@@ -1,46 +1,46 @@
-name: Deploy Order Service to Minikube
-
-on:
-  push:
-    #paths:
-    #  - 'order-service/**'
-     # - 'order-service-ci-cd.yml'
-    branches:
-      - kubernates-deployment-fix
-
-jobs:
-  build-and-deploy:
-    runs-on: self-hosted  # Local runner with minikube & docker installed
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Build order-service JAR
-        run: |
-          cd order-service
-          mvn clean package -DskipTests
-
-      - name: Build JAR
-        run: |
-          cd order-service
-          mvn clean package -DskipTests
-
-      - name: Build Docker image in Minikube Docker
-        run: |
-          eval $(minikube docker-env)
-          cd order-service
-          docker build --no-cache -t order-service:latest .
-
-      - name: Deploy to Minikube
-        run: |
-          kubectl apply -f order-service/order-deployment.yml
-          kubectl apply -f order-service/order-service.yml
-
-      - name: Force K8s to use new image
-        run: |
-          if kubectl get deployment order-deployment; then
-            kubectl rollout restart deployment order-deployment
-          else
-            echo "Deployment not found. Skipping rollout restart."
-          fi
+#name: Deploy Order Service to Minikube
+#
+#on:
+#  push:
+#    #paths:
+#    #  - 'order-service/**'
+#     # - 'order-service-ci-cd.yml'
+#    branches:
+#      - kubernates-deployment-fix
+#
+#jobs:
+#  build-and-deploy:
+#    runs-on: self-hosted  # Local runner with minikube & docker installed
+#
+#    steps:
+#      - name: Checkout code
+#        uses: actions/checkout@v3
+#
+#      - name: Build order-service JAR
+#        run: |
+#          cd order-service
+#          mvn clean package -DskipTests
+#
+#      - name: Build JAR
+#        run: |
+#          cd order-service
+#          mvn clean package -DskipTests
+#
+#      - name: Build Docker image in Minikube Docker
+#        run: |
+#          eval $(minikube docker-env)
+#          cd order-service
+#          docker build --no-cache -t order-service:latest .
+#
+#      - name: Deploy to Minikube
+#        run: |
+#          kubectl apply -f order-service/order-deployment.yml
+#          kubectl apply -f order-service/order-service.yml
+#
+#      - name: Force K8s to use new image
+#        run: |
+#          if kubectl get deployment order-deployment; then
+#            kubectl rollout restart deployment order-deployment
+#          else
+#            echo "Deployment not found. Skipping rollout restart."
+#          fi
