@@ -1,46 +1,65 @@
-#name: Deploy Order Service to Minikube
-#
-#on:
-#  push:
-#    #paths:
-#    #  - 'order-service/**'
-#     # - 'order-service-ci-cd.yml'
-#    branches:
-#      - kubernates-deployment-fix
-#
-#jobs:
-#  build-and-deploy:
-#    runs-on: self-hosted  # Local runner with minikube & docker installed
-#
-#    steps:
-#      - name: Checkout code
-#        uses: actions/checkout@v3
-#
-#      - name: Build order-service JAR
-#        run: |
-#          cd order-service
-#          mvn clean package -DskipTests
-#
-#      - name: Build JAR
-#        run: |
-#          cd order-service
-#          mvn clean package -DskipTests
-#
-#      - name: Build Docker image in Minikube Docker
-#        run: |
-#          eval $(minikube docker-env)
-#          cd order-service
-#          docker build --no-cache -t order-service:latest .
-#
-#      - name: Deploy to Minikube
-#        run: |
-#          kubectl apply -f order-service/order-deployment.yml
-#          kubectl apply -f order-service/order-service.yml
-#
-#      - name: Force K8s to use new image
-#        run: |
-#          if kubectl get deployment order-deployment; then
-#            kubectl rollout restart deployment order-deployment
-#          else
-#            echo "Deployment not found. Skipping rollout restart."
-#          fi
+name: Deploy Order Service to Minikube
+
+on:
+  push:
+    branches: [ kubernates-deployment-fix ]
+    paths:
+      - 'order-service/**'
+      - '.github/workflows/order-service-ci-cd.yml'
+      - 'shared/**'            # only if edits here should redeploy order
+  workflow_dispatch:
+
+env:
+  SERVICE_DIR: order-service
+  IMAGE_TAG: order-service:latest
+  DEPLOY_DIR: order-service
+
+concurrency:
+  group: order-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure Minikube (Docker driver) is running
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker info >/dev/null
+          minikube status || minikube start --driver=docker
+          kubectl config use-context minikube
+          minikube status
+
+      - name: Build fat JAR
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$SERVICE_DIR"
+          mvn -q -DskipTests clean package
+
+      - name: Build image into Minikube
+        shell: bash
+        run: |
+          set -euxo pipefail
+          minikube image build -t "$IMAGE_TAG" -f "$SERVICE_DIR/Dockerfile" "$SERVICE_DIR"
+
+      - name: Apply manifests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          kubectl apply -f "$DEPLOY_DIR/order-deployment.yml"
+          kubectl apply -f "$DEPLOY_DIR/order-service.yml"
+          kubectl rollout status deploy/order-deployment --timeout=180s
+
+      - name: Post-deploy checks
+        if: always()
+        shell: bash
+        run: |
+          kubectl get pods -o wide
+          kubectl get svc -o wide
+          kubectl get events --sort-by=.lastTimestamp | tail -n 25

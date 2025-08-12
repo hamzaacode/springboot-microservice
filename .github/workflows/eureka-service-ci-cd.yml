@@ -3,7 +3,11 @@ name: Deploy Eureka to Minikube
 on:
   push:
     branches: [ kubernates-deployment-fix ]
-  workflow_dispatch:
+    paths:
+      - 'eureka-server/**'
+      - '.github/workflows/eureka-service-ci-cd.yml'
+      - 'shared/**'            # optional: libs/config both services use
+    workflow_dispatch:
 
 env:
   SERVICE_DIR: eureka-server
