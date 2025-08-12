@@ -7,12 +7,12 @@ on:
       - 'order-service/**'
       - '.github/workflows/order-service-ci-cd.yml'
       - 'shared/**'            # only if edits here should redeploy order
-  workflow_dispatch:
+    workflow_dispatch:
 
 env:
   SERVICE_DIR: order-service
   IMAGE_TAG: order-service:latest
-  DEPLOY_DIR: order-service
+  DEPLOY_DIR: order-service/k8s
 
 concurrency:
   group: order-deploy
