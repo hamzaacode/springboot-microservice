@@ -7,8 +7,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1          # allow creating the new pod BEFORE killing the old
-      maxUnavailable: 0    # keep service available during update
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: order-service
@@ -17,24 +17,29 @@ spec:
       labels:
         app: order-service
     spec:
-      terminationGracePeriodSeconds: 15   # don't let shutdown hang forever
+      terminationGracePeriodSeconds: 15
       containers:
         - name: order-service
-          image: order-service:latest     # CI will override with commit tag
+          image: order-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
-          # If you have Actuator:
+          env:
+            - name: EUREKA_URL
+              value: http://eureka-service:8761/eureka/
           readinessProbe:
-            httpGet: { path: "/actuator/health", port: 8081 }
+            httpGet:
+              path: "/actuator/health"
+              port: 8081
             initialDelaySeconds: 8
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 6
           livenessProbe:
-            httpGet: { path: "/actuator/health", port: 8081 }
+            httpGet:
+              path: "/actuator/health"
+              port: 8081
             initialDelaySeconds: 25
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
-          # If you DON'T have Actuator yet, temporarily change both probe paths to "/"
