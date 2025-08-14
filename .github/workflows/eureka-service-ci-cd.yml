@@ -26,18 +26,56 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Ensure Minikube is running (optimized)
+      - name: Ensure Minikube is running (robust)
         shell: bash
         run: |
           set -euxo pipefail
-          # Quick status check first
-          if minikube status >/dev/null 2>&1; then
-            echo "Minikube already running"
+          
+          # Function to verify Minikube is truly working
+          verify_minikube() {
+            minikube status >/dev/null 2>&1 && \
+            kubectl config use-context minikube >/dev/null 2>&1 && \
+            kubectl cluster-info >/dev/null 2>&1
+          }
+          
+          echo "🔍 Checking Minikube status..."
+          
+          if verify_minikube; then
+            echo "✅ Minikube is running and accessible"
           else
-            echo "Starting Minikube..."
-            minikube start --driver=docker --memory=2048 --cpus=2
+            echo "❌ Minikube is not accessible, attempting recovery..."
+          
+            # Try to stop any hanging processes
+            minikube stop || true
+            sleep 5
+          
+            # Start Minikube with proper settings
+            echo "🚀 Starting Minikube..."
+            minikube start \
+              --driver=docker \
+              --memory=4096 \
+              --cpus=2 \
+              --disk-size=20g \
+              --wait=true \
+              --timeout=10m
+          
+            # Wait a bit for full initialization
+            sleep 15
+          
+            # Verify it's working
+            if verify_minikube; then
+              echo "✅ Minikube recovery successful"
+            else
+              echo "❌ Minikube recovery failed"
+              minikube logs || true
+              exit 1
+            fi
           fi
+          
+          # Set context and verify kubectl works
           kubectl config use-context minikube
+          kubectl get nodes
+          echo "🎉 Minikube is ready!"
 
       - name: Configure Docker environment
         shell: bash
