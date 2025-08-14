@@ -107,7 +107,6 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$SERVICE_DIR"
-          # Use parallel builds and skip unnecessary plugins
           mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress \
             -Dmaven.javadoc.skip=true -Dmaven.source.skip=true
 
@@ -117,7 +116,6 @@ jobs:
           DOCKER_BUILDKIT: 1
         run: |
           set -euxo pipefail
-          # Use BuildKit for better caching
           docker build \
             --cache-from "$IMAGE_TAG" \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
@@ -128,37 +126,23 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          
-          # Apply manifests
           kubectl apply -f "$DEPLOY_DIR"
-          
-          # Check if deployment exists and needs restart
           if kubectl get deployment eureka-deployment >/dev/null 2>&1; then
-            # Force image pull by restarting deployment
             kubectl rollout restart deployment/eureka-deployment
           fi
-          
-          # Wait for rollout with shorter timeout
           kubectl rollout status deployment/eureka-deployment --timeout=120s
+
       - name: Quick health check
-    shell: bash
-    run: |
-      set -euxo pipefail
-      # Wait for pods to be ready
-      kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=180s
-      
-      # Get service IP and NodePort directly from Kubernetes (no minikube tunnel needed)
-      NODE_PORT=$(kubectl get svc eureka-service -o jsonpath='{.spec.ports[0].nodePort}')
-      SERVICE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-      SERVICE_URL="http://${SERVICE_IP}:${NODE_PORT}"
-      
-      echo "Service URL: $SERVICE_URL"
-      
-      # Optional: Health endpoint check
-      curl --fail "${SERVICE_URL}/actuator/health"
-      
-      
-      
+        shell: bash
+        run: |
+          set -euxo pipefail
+          kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=180s
+          NODE_PORT=$(kubectl get svc eureka-service -o jsonpath='{.spec.ports[0].nodePort}')
+          SERVICE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          SERVICE_URL="http://${SERVICE_IP}:${NODE_PORT}"
+          echo "Service URL: $SERVICE_URL"
+          curl --fail "${SERVICE_URL}/actuator/health"
+
       - name: Post-deploy info (on failure only)
         if: failure()
         shell: bash
