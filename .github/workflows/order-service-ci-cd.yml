@@ -1,20 +1,21 @@
-name: Deploy Order Service to Minikube
+name: Deploy Order to Minikube
 
 on:
   push:
-    branches: [ kubernates-deployment-fix ]
+    branches: [ main, kubernates-deployment-fix ]
     paths:
       - 'order-service/**'
       - '.github/workflows/order-service-ci-cd.yml'
+      - 'shared/**'
   workflow_dispatch:
 
 env:
   SERVICE_DIR: order-service
-  IMAGE_BASE: order-service
+  IMAGE_TAG: order-service:latest
   DEPLOY_DIR: order-service/k8s
 
 concurrency:
-  group: order-deploy
+  group: eureka-deploy
   cancel-in-progress: true
 
 jobs:
@@ -26,71 +27,39 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Ensure Minikube (Docker driver) is running
-        shell: bash
         run: |
           set -euxo pipefail
           docker info >/dev/null
           minikube status || minikube start --driver=docker
           kubectl config use-context minikube
+          minikube status
 
       - name: Build fat JAR
-        shell: bash
         run: |
           set -euxo pipefail
           cd "$SERVICE_DIR"
           mvn -q -DskipTests clean package
 
       - name: Build image into Minikube
-        shell: bash
         run: |
           set -euxo pipefail
-          TAG="${GITHUB_SHA}"
-          minikube image build \
-            -t "${IMAGE_BASE}:${TAG}" \
-            -t "${IMAGE_BASE}:latest" \
-            -f "${SERVICE_DIR}/Dockerfile" "${SERVICE_DIR}"
+          eval $(minikube docker-env)
+          docker build -t "$IMAGE_TAG" "$SERVICE_DIR"
+          docker images | grep "${IMAGE_TAG%%:*}" || true
 
-          # make sure the node actually has the image
-          minikube image load "${IMAGE_BASE}:${TAG}"
-
-          # sanity checks
-          echo "== images seen by minikube =="
-          minikube image ls | grep "${IMAGE_BASE}" || true
-          echo "== images on node via crictl =="
-          minikube ssh -- sudo crictl images | grep "${IMAGE_BASE}" || true
-
-      - name: Apply manifests and rollout
-        shell: bash
+      - name: Apply Kubernetes manifests
         run: |
           set -euxo pipefail
-          TAG="${GITHUB_SHA}"
-
-          kubectl apply -f "${SERVICE_DIR}/k8s/order-deployment.yml"
-          kubectl apply -f "${SERVICE_DIR}/k8s/order-service.yml"
-
-          # point deployment at the freshly built image
-          kubectl set image deployment/order-deployment \
-            order-service="${IMAGE_BASE}:${TAG}"
-
-          echo "Pods before rollout:"
-          kubectl get pods -l app=order-service -o wide || true
-
-          kubectl rollout status deploy/order-deployment --timeout=300s || {
-            echo "=== DEPLOYMENT ==="; kubectl describe deploy/order-deployment
-            echo "=== REPLICASETS ==="; kubectl get rs -l app=order-service -o wide
-            echo "=== PODS ==="; kubectl get pods -l app=order-service -o wide
-            POD=$(kubectl get pods -l app=order-service --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].0.metadata.name}' || true)
-            if [ -n "${POD}" ]; then
-              echo "=== DESCRIBE POD ${POD} ==="; kubectl describe pod "${POD}"
-              echo "=== LOGS ${POD} (tail) ==="; kubectl logs "${POD}" --tail=200 || true
-            fi
+          kubectl apply -f "$DEPLOY_DIR"
+          kubectl rollout status deploy/order-deployment --timeout=180s || {
+            echo "Rollout failed. Fetching logs..."
+            kubectl logs -l app=order-service --tail=50
             exit 1
           }
 
       - name: Post-deploy checks
         if: always()
-        shell: bash
         run: |
           kubectl get pods -o wide
           kubectl get svc -o wide
-          
+          kubectl get events --sort-by=.lastTimestamp | tail -n 20
