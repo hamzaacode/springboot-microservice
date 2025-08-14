@@ -1,4 +1,4 @@
-name: Deploy Order to Minikube
+name: Deploy Order Service to Minikube
 
 on:
   push:
@@ -15,7 +15,7 @@ env:
   DEPLOY_DIR: order-service/k8s
 
 concurrency:
-  group: eureka-deploy
+  group: order-deploy
   cancel-in-progress: true
 
 jobs:
@@ -23,10 +23,11 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Ensure Minikube (Docker driver) is running
+        shell: bash
         run: |
           set -euxo pipefail
           docker info >/dev/null
@@ -34,20 +35,36 @@ jobs:
           kubectl config use-context minikube
           minikube status
 
-      - name: Build fat JAR
-        run: |
-          set -euxo pipefail
-          cd "$SERVICE_DIR"
-          mvn -q -DskipTests clean package
-
-      - name: Build image into Minikube
+      - name: Configure Docker to use Minikube's environment
+        shell: bash
         run: |
           set -euxo pipefail
           eval $(minikube docker-env)
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Build fat JAR
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$SERVICE_DIR"
+          mvn clean package -DskipTests
+
+      - name: Build Docker image into Minikube
+        shell: bash
+        run: |
+          set -euxo pipefail
           docker build -t "$IMAGE_TAG" "$SERVICE_DIR"
           docker images | grep "${IMAGE_TAG%%:*}" || true
 
       - name: Apply Kubernetes manifests
+        shell: bash
         run: |
           set -euxo pipefail
           kubectl apply -f "$DEPLOY_DIR"
@@ -59,7 +76,20 @@ jobs:
 
       - name: Post-deploy checks
         if: always()
+        shell: bash
         run: |
           kubectl get pods -o wide
           kubectl get svc -o wide
           kubectl get events --sort-by=.lastTimestamp | tail -n 20
+
+      - name: Show Order Service URL
+        if: always()
+        shell: bash
+        run: |
+          minikube service order-service --url || true
+
+      - name: Show recent Order Service logs
+        if: always()
+        shell: bash
+        run: |
+          kubectl logs -l app=order-service --tail=50

@@ -23,10 +23,11 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Ensure Minikube (Docker driver) is running
+        shell: bash
         run: |
           set -euxo pipefail
           docker info >/dev/null
@@ -34,32 +35,61 @@ jobs:
           kubectl config use-context minikube
           minikube status
 
-      - name: Build fat JAR
-        run: |
-          set -euxo pipefail
-          cd "$SERVICE_DIR"
-          mvn -q -DskipTests clean package
-
-      - name: Build image into Minikube
+      - name: Configure Docker to use Minikube's environment
+        shell: bash
         run: |
           set -euxo pipefail
           eval $(minikube docker-env)
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Build fat JAR
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$SERVICE_DIR"
+          mvn clean package -DskipTests
+
+      - name: Build Docker image into Minikube
+        shell: bash
+        run: |
+          set -euxo pipefail
           docker build -t "$IMAGE_TAG" "$SERVICE_DIR"
           docker images | grep "${IMAGE_TAG%%:*}" || true
 
       - name: Apply Kubernetes manifests
+        shell: bash
         run: |
           set -euxo pipefail
           kubectl apply -f "$DEPLOY_DIR"
           kubectl rollout status deploy/eureka-deployment --timeout=180s || {
             echo "Rollout failed. Fetching logs..."
-            kubectl logs -l app=eureka-server --tail=50
+            kubectl logs -l app=eureka-service --tail=50
             exit 1
           }
 
       - name: Post-deploy checks
         if: always()
+        shell: bash
         run: |
           kubectl get pods -o wide
           kubectl get svc -o wide
           kubectl get events --sort-by=.lastTimestamp | tail -n 20
+
+      - name: Show Eureka Service URL
+        if: always()
+        shell: bash
+        run: |
+          minikube service eureka-service --url || true
+
+      - name: Show recent Eureka logs
+        if: always()
+        shell: bash
+        run: |
+          kubectl logs -l app=eureka-service --tail=50
