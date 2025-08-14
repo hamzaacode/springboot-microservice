@@ -136,12 +136,17 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # Wait for pods to be ready
           kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=180s
-          NODE_PORT=$(kubectl get svc eureka-service -o jsonpath='{.spec.ports[0].nodePort}')
-          SERVICE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-          SERVICE_URL="http://${SERVICE_IP}:${NODE_PORT}"
-          echo "Service URL: $SERVICE_URL"
-          curl --fail "${SERVICE_URL}/actuator/health"
+          # Forward the service to localhost in the background
+          kubectl port-forward svc/eureka-service 8761:8761 &
+          PF_PID=$!
+          # Give it a moment to establish
+          sleep 5
+          # Test the health endpoint
+          curl --fail http://localhost:8761/actuator/health
+          # Kill port-forward process
+          kill $PF_PID
 
       - name: Post-deploy info (on failure only)
         if: failure()

@@ -1,50 +1,81 @@
-name: Deploy Order Service (Pre-built Image)
+name: Deploy Order to Minikube
 
 on:
   push:
     branches: [ main, kubernates-deployment-fix ]
     paths:
-      - 'order-service/k8s/**'
+      - 'order-server/**'
       - '.github/workflows/order-service-ci-cd.yml'
+      - 'shared/**'
   workflow_dispatch:
-    inputs:
-      force_rebuild:
-        description: 'Force rebuild Docker image'
-        required: false
-        default: false
-        type: boolean
 
 env:
-  SERVICE_DIR: order-service
+  SERVICE_DIR: order-server
   IMAGE_TAG: order-service:latest
-  DEPLOY_DIR: order-service/k8s
+  DEPLOY_DIR: order-server/k8s
 
 concurrency:
   group: order-deploy
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: self-hosted
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Ensure Minikube is running
+      - name: Ensure Minikube is running (robust)
         shell: bash
         run: |
           set -euxo pipefail
-          if minikube status >/dev/null 2>&1; then
-            echo "Minikube already running"
-            kubectl config use-context minikube
+          
+          # Function to verify Minikube is truly working
+          verify_minikube() {
+            minikube status >/dev/null 2>&1 && \
+            kubectl config use-context minikube >/dev/null 2>&1 && \
+            kubectl cluster-info >/dev/null 2>&1
+          }
+          
+          echo "🔍 Checking Minikube status..."
+          
+          if verify_minikube; then
+            echo "✅ Minikube is running and accessible"
           else
-            echo "Starting Minikube..."
-            minikube start --driver=docker --memory=2048 --cpus=2
-            kubectl config use-context minikube
+            echo "❌ Minikube is not accessible, attempting recovery..."
+          
+            # Try to stop any hanging processes
+            minikube stop || true
+            sleep 5
+          
+            # Start Minikube with proper settings
+            echo "🚀 Starting Minikube..."
+            minikube start \
+              --driver=docker \
+              --memory=4096 \
+              --cpus=2 \
+              --disk-size=20g \
+              --wait=true \
+              --timeout=10m
+          
+            # Wait a bit for full initialization
+            sleep 15
+          
+            # Verify it's working
+            if verify_minikube; then
+              echo "✅ Minikube recovery successful"
+            else
+              echo "❌ Minikube recovery failed"
+              minikube logs || true
+              exit 1
+            fi
           fi
+          
+          # Set context and verify kubectl works
+          kubectl config use-context minikube
+          kubectl get nodes
+          echo "🎉 Minikube is ready!"
 
       - name: Configure Docker environment
         shell: bash
@@ -55,82 +86,77 @@ jobs:
           echo "DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY" >> $GITHUB_ENV
           echo "DOCKER_CERT_PATH=$DOCKER_CERT_PATH" >> $GITHUB_ENV
 
-      - name: Check if image exists
-        id: check_image
-        shell: bash
-        run: |
-          set -euxo pipefail
-          if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            IMAGE_DATE=$(docker image inspect "$IMAGE_TAG" --format '{{.Created}}')
-            echo "Image found: $IMAGE_DATE"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "❌ Image $IMAGE_TAG not found in Minikube!"
-            echo "Please build the image locally first using:"
-            echo "  ./build-local.sh"
-            echo "Or enable force_rebuild in workflow dispatch"
-          fi
+      - name: Setup Java (cached)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Build image if missing (optional)
-        if: steps.check_image.outputs.exists == 'false' && github.event.inputs.force_rebuild == 'true'
+      - name: Cache Maven dependencies (improved)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/maven-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Build fat JAR (optimized)
         shell: bash
         run: |
           set -euxo pipefail
-          echo "🔨 Building image as requested..."
-          
-          # Setup Java
-          java -version || (echo "Java not found, installing..." && sudo apt-get update && sudo apt-get install -y openjdk-17-jdk)
-          
-          # Build locally then copy to Minikube
           cd "$SERVICE_DIR"
-          mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress
-          docker build -t "$IMAGE_TAG" .
-          
-          echo "✅ Image built successfully"
+          mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress \
+            -Dmaven.javadoc.skip=true -Dmaven.source.skip=true
 
-      - name: Fail if no image available
-        if: steps.check_image.outputs.exists == 'false' && github.event.inputs.force_rebuild != 'true'
+      - name: Build Docker image (with cache)
         shell: bash
+        env:
+          DOCKER_BUILDKIT: 1
         run: |
-          echo "❌ No Docker image available and rebuild not requested"
-          echo ""
-          echo "To fix this, either:"
-          echo "1. Build locally: ./build-local.sh"
-          echo "2. Run workflow with 'force_rebuild' enabled"
-          echo "3. Use the full build workflow instead"
-          exit 1
+          set -euxo pipefail
+          docker build \
+            --cache-from "$IMAGE_TAG" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t "$IMAGE_TAG" \
+            "$SERVICE_DIR"
 
-      - name: Deploy to Kubernetes
+      - name: Deploy to Kubernetes (optimized)
         shell: bash
         run: |
           set -euxo pipefail
-          
-          echo "🚀 Deploying with existing image..."
           kubectl apply -f "$DEPLOY_DIR"
-          
-          # Smart deployment strategy
           if kubectl get deployment order-deployment >/dev/null 2>&1; then
             kubectl rollout restart deployment/order-deployment
-            kubectl rollout status deployment/order-deployment --timeout=120s
           fi
+          kubectl rollout status deployment/order-deployment --timeout=120s
 
-      - name: Health check and service info
+      - name: Quick health check
         shell: bash
         run: |
           set -euxo pipefail
-          
           # Wait for pods to be ready
-          kubectl wait --for=condition=ready pod -l app=order-service --timeout=60s
-          
-          echo "✅ Deployment successful!"
-          echo "🌐 Service URL: $(minikube service order-service --url 2>/dev/null || echo 'Not available')"
-          echo "📋 Pod status:"
-          kubectl get pods -l app=order-service -o wide
+          kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=180s
+          # Forward the service to localhost in the background
+          kubectl port-forward svc/eureka-service 8081:8081 &
+          PF_PID=$!
+          # Give it a moment to establish
+          sleep 5
+          # Test the health endpoint
+          curl --fail http://localhost:8081/actuator/health
+          # Kill port-forward process
+          kill $PF_PID
 
-      - name: Show logs on failure
+      - name: Post-deploy info (on failure only)
         if: failure()
         shell: bash
         run: |
-          echo "=== DEPLOYMENT LOGS ==="
-          kubectl logs -l app=order-service --tail=30 --timestamps
+          echo "=== PODS ==="
+          kubectl get pods -o wide
+          echo "=== SERVICES ==="
+          kubectl get svc -o wide
+          echo "=== RECENT EVENTS ==="
+          kubectl get events --sort-by=.lastTimestamp | tail -n 10
+          echo "=== order LOGS ==="
+          kubectl logs -l app=order-service --tail=30
