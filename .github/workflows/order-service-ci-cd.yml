@@ -1,13 +1,18 @@
-name: Deploy Order Service to Minikube
+name: Deploy Order Service (Pre-built Image)
 
 on:
   push:
     branches: [ main, kubernates-deployment-fix ]
     paths:
-      - 'order-service/**'
+      - 'order-service/k8s/**'
       - '.github/workflows/order-service-ci-cd.yml'
-      - 'shared/**'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild Docker image'
+        required: false
+        default: false
+        type: boolean
 
 env:
   SERVICE_DIR: order-service
@@ -19,27 +24,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: self-hosted
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Shallow clone for faster checkout
           fetch-depth: 1
 
-      - name: Ensure Minikube is running (optimized)
+      - name: Ensure Minikube is running
         shell: bash
         run: |
           set -euxo pipefail
-          # Quick status check first
           if minikube status >/dev/null 2>&1; then
             echo "Minikube already running"
             kubectl config use-context minikube
           else
             echo "Starting Minikube..."
-            minikube start --driver=docker --memory=2048 --cpus=2 --disk-size=20g
+            minikube start --driver=docker --memory=2048 --cpus=2
             kubectl config use-context minikube
           fi
 
@@ -52,157 +55,82 @@ jobs:
           echo "DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY" >> $GITHUB_ENV
           echo "DOCKER_CERT_PATH=$DOCKER_CERT_PATH" >> $GITHUB_ENV
 
-      - name: Setup Java (cached)
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Cache Maven dependencies (improved)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.m2/repository
-            ~/.m2/wrapper
-            target/
-            */target/
-          key: ${{ runner.os }}-maven-order-${{ hashFiles('**/pom.xml', '**/maven-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-order-
-            ${{ runner.os }}-maven-
-
-      - name: Check for changes in source code
-        id: changes
+      - name: Check if image exists
+        id: check_image
         shell: bash
         run: |
           set -euxo pipefail
-          cd "$SERVICE_DIR"
-          
-          # Check if we need to rebuild based on cache
-          if [ -f "target/*.jar" ] && [ -f "../.github/workflows/order-service-ci-cd.yml" ]; then
-            # Find newest source file
-            NEWEST_SRC=$(find src -name "*.java" -o -name "*.xml" -o -name "*.properties" -o -name "*.yml" -o -name "*.yaml" | xargs ls -t | head -n1)
-            NEWEST_JAR=$(find target -name "*.jar" | xargs ls -t | head -n1)
-          
-            if [ -z "$NEWEST_SRC" ] || [ -z "$NEWEST_JAR" ] || [ "$NEWEST_SRC" -nt "$NEWEST_JAR" ]; then
-              echo "rebuild=true" >> $GITHUB_OUTPUT
-            else
-              echo "rebuild=false" >> $GITHUB_OUTPUT
-              echo "No changes detected, skipping build"
-            fi
-          else
-            echo "rebuild=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build fat JAR (optimized)
-        if: steps.changes.outputs.rebuild == 'true'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "$SERVICE_DIR"
-          
-          # Use parallel builds and skip unnecessary plugins
-          mvn clean package -DskipTests \
-            -T 1C \
-            --batch-mode \
-            --no-transfer-progress \
-            -Dmaven.javadoc.skip=true \
-            -Dmaven.source.skip=true \
-            -Dmaven.install.skip=true \
-            -Dmaven.deploy.skip=true
-
-      - name: Build Docker image (with cache)
-        shell: bash
-        env:
-          DOCKER_BUILDKIT: 1
-          BUILDKIT_PROGRESS: plain
-        run: |
-          set -euxo pipefail
-          
-          # Check if image already exists and is recent
           if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
             IMAGE_DATE=$(docker image inspect "$IMAGE_TAG" --format '{{.Created}}')
-            echo "Existing image found: $IMAGE_DATE"
+            echo "Image found: $IMAGE_DATE"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "❌ Image $IMAGE_TAG not found in Minikube!"
+            echo "Please build the image locally first using:"
+            echo "  ./build-local.sh"
+            echo "Or enable force_rebuild in workflow dispatch"
           fi
-          
-          # Build with advanced caching
-          docker build \
-            --cache-from "$IMAGE_TAG" \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            --build-arg MAVEN_OPTS="-XX:+UseParallelGC -Xmx1g" \
-            -t "$IMAGE_TAG" \
-            "$SERVICE_DIR"
 
-      - name: Deploy to Kubernetes (optimized)
+      - name: Build image if missing (optional)
+        if: steps.check_image.outputs.exists == 'false' && github.event.inputs.force_rebuild == 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "🔨 Building image as requested..."
+          
+          # Setup Java
+          java -version || (echo "Java not found, installing..." && sudo apt-get update && sudo apt-get install -y openjdk-17-jdk)
+          
+          # Build locally then copy to Minikube
+          cd "$SERVICE_DIR"
+          mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress
+          docker build -t "$IMAGE_TAG" .
+          
+          echo "✅ Image built successfully"
+
+      - name: Fail if no image available
+        if: steps.check_image.outputs.exists == 'false' && github.event.inputs.force_rebuild != 'true'
+        shell: bash
+        run: |
+          echo "❌ No Docker image available and rebuild not requested"
+          echo ""
+          echo "To fix this, either:"
+          echo "1. Build locally: ./build-local.sh"
+          echo "2. Run workflow with 'force_rebuild' enabled"
+          echo "3. Use the full build workflow instead"
+          exit 1
+
+      - name: Deploy to Kubernetes
         shell: bash
         run: |
           set -euxo pipefail
           
-          # Apply manifests
+          echo "🚀 Deploying with existing image..."
           kubectl apply -f "$DEPLOY_DIR"
           
           # Smart deployment strategy
           if kubectl get deployment order-deployment >/dev/null 2>&1; then
-            # Check if deployment needs update
-            CURRENT_IMAGE=$(kubectl get deployment order-deployment -o jsonpath='{.spec.template.spec.containers[0].image}')
-            if [ "$CURRENT_IMAGE" != "$IMAGE_TAG" ]; then
-              echo "Updating deployment with new image"
-              kubectl set image deployment/order-deployment order-service="$IMAGE_TAG"
-            else
-              echo "Restarting deployment to pick up latest image"
-              kubectl rollout restart deployment/order-deployment
-            fi
+            kubectl rollout restart deployment/order-deployment
+            kubectl rollout status deployment/order-deployment --timeout=120s
           fi
-          
-          # Wait for rollout with optimized timeout
-          kubectl rollout status deployment/order-deployment --timeout=120s
 
-      - name: Health check and service discovery
+      - name: Health check and service info
         shell: bash
         run: |
           set -euxo pipefail
           
           # Wait for pods to be ready
-          echo "Waiting for pods to be ready..."
           kubectl wait --for=condition=ready pod -l app=order-service --timeout=60s
           
-          # Get service URL
-          SERVICE_URL=$(minikube service order-service --url 2>/dev/null || echo "Service URL not available")
-          echo "Order Service URL: $SERVICE_URL"
-          
-          # Basic health check if service is available
-          if [[ "$SERVICE_URL" =~ ^http ]]; then
-            echo "Performing health check..."
-            curl -f "$SERVICE_URL/actuator/health" --max-time 10 || echo "Health check failed or endpoint not available"
-          fi
+          echo "✅ Deployment successful!"
+          echo "🌐 Service URL: $(minikube service order-service --url 2>/dev/null || echo 'Not available')"
+          echo "📋 Pod status:"
+          kubectl get pods -l app=order-service -o wide
 
-      - name: Post-deploy diagnostics (on failure only)
+      - name: Show logs on failure
         if: failure()
         shell: bash
         run: |
-          echo "=== DEPLOYMENT STATUS ==="
-          kubectl describe deployment order-deployment || true
-          
-          echo "=== PODS ==="
-          kubectl get pods -l app=order-service -o wide
-          
-          echo "=== SERVICES ==="
-          kubectl get svc order-service -o wide || true
-          
-          echo "=== RECENT EVENTS ==="
-          kubectl get events --sort-by=.lastTimestamp --field-selector involvedObject.kind=Pod | grep order-service | tail -n 10
-          
-          echo "=== ORDER SERVICE LOGS ==="
-          kubectl logs -l app=order-service --tail=50 --timestamps
-          
-          echo "=== NODE RESOURCES ==="
-          kubectl top nodes || echo "Metrics not available"
-          kubectl top pods -l app=order-service || echo "Pod metrics not available"
-
-      - name: Cleanup old Docker images (weekly)
-        if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[cleanup]')
-        shell: bash
-        run: |
-          echo "Cleaning up old Docker images..."
-          docker image prune -af --filter "until=168h" || true
-          docker system df
+          echo "=== DEPLOYMENT LOGS ==="
+          kubectl logs -l app=order-service --tail=30 --timestamps
