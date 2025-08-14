@@ -140,18 +140,25 @@ jobs:
           
           # Wait for rollout with shorter timeout
           kubectl rollout status deployment/eureka-deployment --timeout=120s
-
       - name: Quick health check
-        shell: bash
-        run: |
-          set -euxo pipefail
-          # Wait for pods to be ready
-          kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=60s
-          
-          # Basic connectivity test
-          SERVICE_URL=$(minikube service eureka-service --url)
-          echo "Service URL: $SERVICE_URL"
-
+    shell: bash
+    run: |
+      set -euxo pipefail
+      # Wait for pods to be ready
+      kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=180s
+      
+      # Get service IP and NodePort directly from Kubernetes (no minikube tunnel needed)
+      NODE_PORT=$(kubectl get svc eureka-service -o jsonpath='{.spec.ports[0].nodePort}')
+      SERVICE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+      SERVICE_URL="http://${SERVICE_IP}:${NODE_PORT}"
+      
+      echo "Service URL: $SERVICE_URL"
+      
+      # Optional: Health endpoint check
+      curl --fail "${SERVICE_URL}/actuator/health"
+      
+      
+      
       - name: Post-deploy info (on failure only)
         if: failure()
         shell: bash
