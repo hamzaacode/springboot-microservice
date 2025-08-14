@@ -30,26 +30,18 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          
-          # Function to verify Minikube is truly working
           verify_minikube() {
             minikube status >/dev/null 2>&1 && \
             kubectl config use-context minikube >/dev/null 2>&1 && \
             kubectl cluster-info >/dev/null 2>&1
           }
-          
           echo "🔍 Checking Minikube status..."
-          
           if verify_minikube; then
             echo "✅ Minikube is running and accessible"
           else
             echo "❌ Minikube is not accessible, attempting recovery..."
-          
-            # Try to stop any hanging processes
             minikube stop || true
             sleep 5
-          
-            # Start Minikube with proper settings
             echo "🚀 Starting Minikube..."
             minikube start \
               --driver=docker \
@@ -58,11 +50,7 @@ jobs:
               --disk-size=20g \
               --wait=true \
               --timeout=10m
-          
-            # Wait a bit for full initialization
             sleep 15
-          
-            # Verify it's working
             if verify_minikube; then
               echo "✅ Minikube recovery successful"
             else
@@ -71,8 +59,6 @@ jobs:
               exit 1
             fi
           fi
-          
-          # Set context and verify kubectl works
           kubectl config use-context minikube
           kubectl get nodes
           echo "🎉 Minikube is ready!"
@@ -86,21 +72,21 @@ jobs:
           echo "DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY" >> $GITHUB_ENV
           echo "DOCKER_CERT_PATH=$DOCKER_CERT_PATH" >> $GITHUB_ENV
 
-      - name: Setup Java (cached)
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Cache Maven dependencies (improved)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.m2/repository
-            ~/.m2/wrapper
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/maven-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-
+      - name: Use persistent Maven repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /opt/maven-repo
+          rm -rf ~/.m2/repository
+          mkdir -p ~/.m2
+          ln -s /opt/maven-repo ~/.m2/repository
+          echo "✅ Using persistent Maven repo at /opt/maven-repo"
 
       - name: Build fat JAR (optimized)
         shell: bash
@@ -110,7 +96,7 @@ jobs:
           mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress \
             -Dmaven.javadoc.skip=true -Dmaven.source.skip=true
 
-      - name: Build Docker image (with cache)
+      - name: Build Docker image
         shell: bash
         env:
           DOCKER_BUILDKIT: 1
@@ -122,7 +108,7 @@ jobs:
             -t "$IMAGE_TAG" \
             "$SERVICE_DIR"
 
-      - name: Deploy to Kubernetes (optimized)
+      - name: Deploy to Kubernetes
         shell: bash
         run: |
           set -euxo pipefail
@@ -136,16 +122,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # Wait for pods to be ready
           kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=180s
-          # Forward the service to localhost in the background
           kubectl port-forward svc/eureka-service 8761:8761 &
           PF_PID=$!
-          # Give it a moment to establish
           sleep 5
-          # Test the health endpoint
           curl --fail http://localhost:8761/actuator/health
-          # Kill port-forward process
           kill $PF_PID
 
       - name: Post-deploy info (on failure only)
