@@ -2,12 +2,12 @@ name: Deploy Eureka to Minikube
 
 on:
   push:
-    branches: [ kubernates-deployment-fix ]
+    branches: [ main, kubernates-deployment-fix ]
     paths:
       - 'eureka-server/**'
       - '.github/workflows/eureka-service-ci-cd.yml'
       - 'shared/**'
-    workflow_dispatch:
+  workflow_dispatch:
 
 env:
   SERVICE_DIR: eureka-server
@@ -27,7 +27,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Ensure Minikube (Docker driver) is running
-        shell: bash
         run: |
           set -euxo pipefail
           docker info >/dev/null
@@ -36,33 +35,31 @@ jobs:
           minikube status
 
       - name: Build fat JAR
-        shell: bash
         run: |
           set -euxo pipefail
           cd "$SERVICE_DIR"
           mvn -q -DskipTests clean package
 
       - name: Build image into Minikube
-        shell: bash
         run: |
           set -euxo pipefail
-          # Build using the Dockerfile inside the service dir
-          minikube image build -t "$IMAGE_TAG" -f "$SERVICE_DIR/Dockerfile" "$SERVICE_DIR"
-          # Prove it's there
-          minikube image ls | grep "${IMAGE_TAG%%:*}" || true
+          eval $(minikube docker-env)
+          docker build -t "$IMAGE_TAG" "$SERVICE_DIR"
+          docker images | grep "${IMAGE_TAG%%:*}" || true
 
-      - name: Apply manifests
-        shell: bash
+      - name: Apply Kubernetes manifests
         run: |
           set -euxo pipefail
-          kubectl apply -f "$DEPLOY_DIR/eureka-deployment.yml"
-          kubectl apply -f "$DEPLOY_DIR/eureka-service.yml"
-          kubectl rollout status deploy/eureka-deployment --timeout=180s
+          kubectl apply -f "$DEPLOY_DIR"
+          kubectl rollout status deploy/eureka-deployment --timeout=180s || {
+            echo "Rollout failed. Fetching logs..."
+            kubectl logs -l app=eureka-server --tail=50
+            exit 1
+          }
 
       - name: Post-deploy checks
         if: always()
-        shell: bash
         run: |
           kubectl get pods -o wide
           kubectl get svc -o wide
-          kubectl get events --sort-by=.lastTimestamp | tail -n 25
+          kubectl get events --sort-by=.lastTimestamp | tail -n 20
