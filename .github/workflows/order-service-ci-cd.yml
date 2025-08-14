@@ -4,15 +4,15 @@ on:
   push:
     branches: [ main, kubernates-deployment-fix ]
     paths:
-      - 'order-server/**'
+      - 'order-service/**'
       - '.github/workflows/order-service-ci-cd.yml'
       - 'shared/**'
   workflow_dispatch:
 
 env:
-  SERVICE_DIR: order-server
+  SERVICE_DIR: order-service
   IMAGE_TAG: order-service:latest
-  DEPLOY_DIR: order-server/k8s
+  DEPLOY_DIR: order-service/k8s
 
 concurrency:
   group: order-deploy
@@ -137,9 +137,9 @@ jobs:
         run: |
           set -euxo pipefail
           # Wait for pods to be ready
-          kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=order-service --timeout=180s
           # Forward the service to localhost in the background
-          kubectl port-forward svc/eureka-service 8081:8081 &
+          kubectl port-forward svc/order-service 8081:8081 &
           PF_PID=$!
           # Give it a moment to establish
           sleep 5
