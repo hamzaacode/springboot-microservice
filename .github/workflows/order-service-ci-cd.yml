@@ -25,71 +25,184 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Shallow clone for faster checkout
+          fetch-depth: 1
 
-      - name: Ensure Minikube (Docker driver) is running
+      - name: Ensure Minikube is running (optimized)
         shell: bash
         run: |
           set -euxo pipefail
-          docker info >/dev/null
-          minikube status || minikube start --driver=docker
-          kubectl config use-context minikube
-          minikube status
+          # Quick status check first
+          if minikube status >/dev/null 2>&1; then
+            echo "Minikube already running"
+            kubectl config use-context minikube
+          else
+            echo "Starting Minikube..."
+            minikube start --driver=docker --memory=2048 --cpus=2 --disk-size=20g
+            kubectl config use-context minikube
+          fi
 
-      - name: Configure Docker to use Minikube's environment
+      - name: Configure Docker environment
         shell: bash
         run: |
           set -euxo pipefail
           eval $(minikube docker-env)
+          echo "DOCKER_HOST=$DOCKER_HOST" >> $GITHUB_ENV
+          echo "DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY" >> $GITHUB_ENV
+          echo "DOCKER_CERT_PATH=$DOCKER_CERT_PATH" >> $GITHUB_ENV
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v3
+      - name: Setup Java (cached)
+        uses: actions/setup-java@v4
         with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies (improved)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+            target/
+            */target/
+          key: ${{ runner.os }}-maven-order-${{ hashFiles('**/pom.xml', '**/maven-wrapper.properties') }}
           restore-keys: |
+            ${{ runner.os }}-maven-order-
             ${{ runner.os }}-maven-
 
-      - name: Build fat JAR
+      - name: Check for changes in source code
+        id: changes
         shell: bash
         run: |
           set -euxo pipefail
           cd "$SERVICE_DIR"
-          mvn clean package -DskipTests
+          
+          # Check if we need to rebuild based on cache
+          if [ -f "target/*.jar" ] && [ -f "../.github/workflows/order-service-ci-cd.yml" ]; then
+            # Find newest source file
+            NEWEST_SRC=$(find src -name "*.java" -o -name "*.xml" -o -name "*.properties" -o -name "*.yml" -o -name "*.yaml" | xargs ls -t | head -n1)
+            NEWEST_JAR=$(find target -name "*.jar" | xargs ls -t | head -n1)
+          
+            if [ -z "$NEWEST_SRC" ] || [ -z "$NEWEST_JAR" ] || [ "$NEWEST_SRC" -nt "$NEWEST_JAR" ]; then
+              echo "rebuild=true" >> $GITHUB_OUTPUT
+            else
+              echo "rebuild=false" >> $GITHUB_OUTPUT
+              echo "No changes detected, skipping build"
+            fi
+          else
+            echo "rebuild=true" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Build Docker image into Minikube
+      - name: Build fat JAR (optimized)
+        if: steps.changes.outputs.rebuild == 'true'
         shell: bash
         run: |
           set -euxo pipefail
-          docker build -t "$IMAGE_TAG" "$SERVICE_DIR"
-          docker images | grep "${IMAGE_TAG%%:*}" || true
+          cd "$SERVICE_DIR"
+          
+          # Use parallel builds and skip unnecessary plugins
+          mvn clean package -DskipTests \
+            -T 1C \
+            --batch-mode \
+            --no-transfer-progress \
+            -Dmaven.javadoc.skip=true \
+            -Dmaven.source.skip=true \
+            -Dmaven.install.skip=true \
+            -Dmaven.deploy.skip=true
 
-      - name: Apply Kubernetes manifests
+      - name: Build Docker image (with cache)
+        shell: bash
+        env:
+          DOCKER_BUILDKIT: 1
+          BUILDKIT_PROGRESS: plain
+        run: |
+          set -euxo pipefail
+          
+          # Check if image already exists and is recent
+          if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+            IMAGE_DATE=$(docker image inspect "$IMAGE_TAG" --format '{{.Created}}')
+            echo "Existing image found: $IMAGE_DATE"
+          fi
+          
+          # Build with advanced caching
+          docker build \
+            --cache-from "$IMAGE_TAG" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --build-arg MAVEN_OPTS="-XX:+UseParallelGC -Xmx1g" \
+            -t "$IMAGE_TAG" \
+            "$SERVICE_DIR"
+
+      - name: Deploy to Kubernetes (optimized)
         shell: bash
         run: |
           set -euxo pipefail
+          
+          # Apply manifests
           kubectl apply -f "$DEPLOY_DIR"
-          kubectl rollout status deploy/order-deployment --timeout=180s || {
-            echo "Rollout failed. Fetching logs..."
-            kubectl logs -l app=order-service --tail=50
-            exit 1
-          }
+          
+          # Smart deployment strategy
+          if kubectl get deployment order-deployment >/dev/null 2>&1; then
+            # Check if deployment needs update
+            CURRENT_IMAGE=$(kubectl get deployment order-deployment -o jsonpath='{.spec.template.spec.containers[0].image}')
+            if [ "$CURRENT_IMAGE" != "$IMAGE_TAG" ]; then
+              echo "Updating deployment with new image"
+              kubectl set image deployment/order-deployment order-service="$IMAGE_TAG"
+            else
+              echo "Restarting deployment to pick up latest image"
+              kubectl rollout restart deployment/order-deployment
+            fi
+          fi
+          
+          # Wait for rollout with optimized timeout
+          kubectl rollout status deployment/order-deployment --timeout=120s
 
-      - name: Post-deploy checks
-        if: always()
+      - name: Health check and service discovery
         shell: bash
         run: |
-          kubectl get pods -o wide
-          kubectl get svc -o wide
-          kubectl get events --sort-by=.lastTimestamp | tail -n 20
+          set -euxo pipefail
+          
+          # Wait for pods to be ready
+          echo "Waiting for pods to be ready..."
+          kubectl wait --for=condition=ready pod -l app=order-service --timeout=60s
+          
+          # Get service URL
+          SERVICE_URL=$(minikube service order-service --url 2>/dev/null || echo "Service URL not available")
+          echo "Order Service URL: $SERVICE_URL"
+          
+          # Basic health check if service is available
+          if [[ "$SERVICE_URL" =~ ^http ]]; then
+            echo "Performing health check..."
+            curl -f "$SERVICE_URL/actuator/health" --max-time 10 || echo "Health check failed or endpoint not available"
+          fi
 
-      - name: Show Order Service URL
-        if: always()
+      - name: Post-deploy diagnostics (on failure only)
+        if: failure()
         shell: bash
         run: |
-          minikube service order-service --url || true
+          echo "=== DEPLOYMENT STATUS ==="
+          kubectl describe deployment order-deployment || true
+          
+          echo "=== PODS ==="
+          kubectl get pods -l app=order-service -o wide
+          
+          echo "=== SERVICES ==="
+          kubectl get svc order-service -o wide || true
+          
+          echo "=== RECENT EVENTS ==="
+          kubectl get events --sort-by=.lastTimestamp --field-selector involvedObject.kind=Pod | grep order-service | tail -n 10
+          
+          echo "=== ORDER SERVICE LOGS ==="
+          kubectl logs -l app=order-service --tail=50 --timestamps
+          
+          echo "=== NODE RESOURCES ==="
+          kubectl top nodes || echo "Metrics not available"
+          kubectl top pods -l app=order-service || echo "Pod metrics not available"
 
-      - name: Show recent Order Service logs
-        if: always()
+      - name: Cleanup old Docker images (weekly)
+        if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[cleanup]')
         shell: bash
         run: |
-          kubectl logs -l app=order-service --tail=50
+          echo "Cleaning up old Docker images..."
+          docker image prune -af --filter "until=168h" || true
+          docker system df

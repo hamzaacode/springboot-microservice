@@ -26,70 +26,103 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Ensure Minikube (Docker driver) is running
+      - name: Ensure Minikube is running (optimized)
         shell: bash
         run: |
           set -euxo pipefail
-          docker info >/dev/null
-          minikube status || minikube start --driver=docker
+          # Quick status check first
+          if minikube status >/dev/null 2>&1; then
+            echo "Minikube already running"
+          else
+            echo "Starting Minikube..."
+            minikube start --driver=docker --memory=2048 --cpus=2
+          fi
           kubectl config use-context minikube
-          minikube status
 
-      - name: Configure Docker to use Minikube's environment
+      - name: Configure Docker environment
         shell: bash
         run: |
           set -euxo pipefail
           eval $(minikube docker-env)
+          echo "DOCKER_HOST=$DOCKER_HOST" >> $GITHUB_ENV
+          echo "DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY" >> $GITHUB_ENV
+          echo "DOCKER_CERT_PATH=$DOCKER_CERT_PATH" >> $GITHUB_ENV
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v3
+      - name: Setup Java (cached)
+        uses: actions/setup-java@v4
         with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies (improved)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/maven-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-maven-
 
-      - name: Build fat JAR
+      - name: Build fat JAR (optimized)
         shell: bash
         run: |
           set -euxo pipefail
           cd "$SERVICE_DIR"
-          mvn clean package -DskipTests
+          # Use parallel builds and skip unnecessary plugins
+          mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress \
+            -Dmaven.javadoc.skip=true -Dmaven.source.skip=true
 
-      - name: Build Docker image into Minikube
+      - name: Build Docker image (with cache)
+        shell: bash
+        env:
+          DOCKER_BUILDKIT: 1
+        run: |
+          set -euxo pipefail
+          # Use BuildKit for better caching
+          docker build \
+            --cache-from "$IMAGE_TAG" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t "$IMAGE_TAG" \
+            "$SERVICE_DIR"
+
+      - name: Deploy to Kubernetes (optimized)
         shell: bash
         run: |
           set -euxo pipefail
-          docker build -t "$IMAGE_TAG" "$SERVICE_DIR"
-          docker images | grep "${IMAGE_TAG%%:*}" || true
-
-      - name: Apply Kubernetes manifests
-        shell: bash
-        run: |
-          set -euxo pipefail
+          
+          # Apply manifests
           kubectl apply -f "$DEPLOY_DIR"
-          kubectl rollout status deploy/eureka-deployment --timeout=180s || {
-            echo "Rollout failed. Fetching logs..."
-            kubectl logs -l app=eureka-service --tail=50
-            exit 1
-          }
+          
+          # Check if deployment exists and needs restart
+          if kubectl get deployment eureka-deployment >/dev/null 2>&1; then
+            # Force image pull by restarting deployment
+            kubectl rollout restart deployment/eureka-deployment
+          fi
+          
+          # Wait for rollout with shorter timeout
+          kubectl rollout status deployment/eureka-deployment --timeout=120s
 
-      - name: Post-deploy checks
-        if: always()
+      - name: Quick health check
         shell: bash
         run: |
+          set -euxo pipefail
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod -l app=eureka-service --timeout=60s
+          
+          # Basic connectivity test
+          SERVICE_URL=$(minikube service eureka-service --url)
+          echo "Service URL: $SERVICE_URL"
+
+      - name: Post-deploy info (on failure only)
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== PODS ==="
           kubectl get pods -o wide
+          echo "=== SERVICES ==="
           kubectl get svc -o wide
-          kubectl get events --sort-by=.lastTimestamp | tail -n 20
-
-      - name: Show Eureka Service URL
-        if: always()
-        shell: bash
-        run: |
-          minikube service eureka-service --url || true
-
-      - name: Show recent Eureka logs
-        if: always()
-        shell: bash
-        run: |
-          kubectl logs -l app=eureka-service --tail=50
+          echo "=== RECENT EVENTS ==="
+          kubectl get events --sort-by=.lastTimestamp | tail -n 10
+          echo "=== EUREKA LOGS ==="
+          kubectl logs -l app=eureka-service --tail=30
