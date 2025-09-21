@@ -1,6 +1,10 @@
 name: user-service
 
 on:
+  workflow_run:
+    workflows: ["eureka-service"]
+    types:
+      - completed
   push:
     branches: [ main, kubernates-deployment-fix-2 ]
     paths:
@@ -107,6 +111,14 @@ jobs:
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             -t "$IMAGE_TAG" \
             "$SERVICE_DIR"
+
+      - name: Ensure Eureka is running
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "⏳ Waiting for Eureka server to be available..."
+          kubectl wait --for=condition=available --timeout=180s deployment/eureka-deployment
+          echo "✅ Eureka server is ready!"
 
       - name: Deploy to Kubernetes
         shell: bash
