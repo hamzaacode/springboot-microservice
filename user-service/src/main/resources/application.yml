@@ -1,31 +1,43 @@
 server:
   port: 8082
-  undertow:
-    options:
-      KEEP_ALIVE: false
+  tomcat:
+    socket:
+      so-linger: -1  # disable soLinger to fix SocketException
+
 spring:
   application:
     name: user-service
-eureka:
-  client:
-    register-with-eureka: true
-    fetch-registry: true
-    service-url:
-      defaultZone: http://eureka-service:8761/eureka
-  instance:
-    metadata-map:
-      management.port: ${server.port}
+
 management:
   endpoints:
     web:
       exposure:
-        include: "*"
+        include: health,info,metrics
   endpoint:
     health:
-      show-details: ALWAYS
-
+      show-details: always
   info:
-    app:
-      name: User Service
-      description: This is the user microservice
-      version: 1.0.0
+    env:
+      enabled: true
+
+info:
+  app:
+    name: User Service
+    description: Microservice for managing users
+    version: 1.0.0
+  build:
+    artifact: user-service
+    group: org.example
+  contact:
+    team: Development Team
+    email: dev@example.com
+  environment: development
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 30
+    lease-expiration-duration-in-seconds: 90

@@ -1,0 +1,134 @@
+name: Build and Deploy User Service
+
+on:
+  push:
+    branches: [ main, kubernates-deployment-fix-2 ]
+    paths:
+      - 'user-service/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'user-service/**'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      SERVICE_NAME: user-service
+      SERVICE_DIR: user-service
+      IMAGE_TAG: hamzaacode/user-service:latest
+      CONTAINER_NAME: user-service-container
+      HOST_PORT: 8082
+      CONTAINER_PORT: 8082
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build fat JAR (optimized)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$SERVICE_DIR"
+          mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress \
+            -Dmaven.javadoc.skip=true -Dmaven.source.skip=true
+
+      - name: Build Docker image (fast)
+        shell: bash
+        env:
+          DOCKER_BUILDKIT: 1
+        run: |
+          set -euxo pipefail
+          cd "$SERVICE_DIR"
+          
+          # Create optimized Dockerfile
+          cat > Dockerfile.optimized << 'EOF'
+          FROM openjdk:17-jre-slim
+          WORKDIR /app
+          COPY target/*.jar app.jar
+          EXPOSE 8082
+          ENTRYPOINT ["java", "-Xms256m", "-Xmx512m", "-server", "-jar", "app.jar"]
+          EOF
+          
+          # Create .dockerignore
+          cat > .dockerignore << 'EOF'
+          target/classes
+          target/test-classes
+          .git
+          README.md
+          EOF
+          
+          docker build -f Dockerfile.optimized \
+            --cache-from "$IMAGE_TAG" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t "$IMAGE_TAG" \
+            .
+
+      - name: Stop and remove existing container
+        shell: bash
+        run: |
+          set +e
+          docker stop "$CONTAINER_NAME" 2>/dev/null || true
+          docker rm "$CONTAINER_NAME" 2>/dev/null || true
+          set -e
+
+      - name: Run new container
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run -d \
+            --name "$CONTAINER_NAME" \
+            --network microservices-network \
+            -p "$HOST_PORT:$CONTAINER_PORT" \
+            --restart unless-stopped \
+            "$IMAGE_TAG"
+
+      - name: Verify deployment
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "Waiting for user-service to start..."
+          sleep 30
+          
+          # Check if container is running
+          if ! docker ps | grep -q "$CONTAINER_NAME"; then
+            echo "Container is not running!"
+            docker logs "$CONTAINER_NAME"
+            exit 1
+          fi
+          
+          # Test health endpoint
+          if curl -f "http://localhost:$HOST_PORT/actuator/health"; then
+            echo "✅ User service is healthy!"
+          else
+            echo "❌ Health check failed!"
+            docker logs "$CONTAINER_NAME"
+            exit 1
+          fi
+
+      - name: Test service endpoints
+        shell: bash
+        run: |
+          set -euxo pipefail
+          
+          # Test actuator info endpoint
+          echo "Testing actuator info endpoint..."
+          curl -f "http://localhost:$HOST_PORT/actuator/info" || echo "Info endpoint not accessible"
+          
+          # Test if service registers with Eureka (if eureka is running)
+          echo "Service deployed successfully!"
+          docker ps | grep "$CONTAINER_NAME"
