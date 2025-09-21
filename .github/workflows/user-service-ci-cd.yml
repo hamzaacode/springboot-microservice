@@ -54,16 +54,16 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$SERVICE_DIR"
-          
+
           # Create optimized Dockerfile
           cat > Dockerfile.optimized << 'EOF'
-          FROM openjdk:17-jre-slim
+          FROM eclipse-temurin:17-jre
           WORKDIR /app
           COPY target/*.jar app.jar
           EXPOSE 8082
           ENTRYPOINT ["java", "-Xms256m", "-Xmx512m", "-server", "-jar", "app.jar"]
           EOF
-          
+
           # Create .dockerignore
           cat > .dockerignore << 'EOF'
           target/classes
@@ -71,12 +71,13 @@ jobs:
           .git
           README.md
           EOF
-          
+
           docker build -f Dockerfile.optimized \
             --cache-from "$IMAGE_TAG" \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             -t "$IMAGE_TAG" \
             .
+      
 
       - name: Stop and remove existing container
         shell: bash
