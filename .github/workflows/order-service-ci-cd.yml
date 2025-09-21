@@ -1,8 +1,8 @@
-name: Deploy Order Service to Minikube
+name: order-service
 
 on:
   push:
-    branches: [ main, kubernates-deployment-fix ]
+    branches: [ main, kubernates-deployment-fix-2 ]
     paths:
       - 'order-service/**'
       - '.github/workflows/order-service-ci-cd.yml'
