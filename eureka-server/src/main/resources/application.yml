@@ -1,9 +1,9 @@
+server:
+  port: 8761
+
 spring:
   application:
     name: eureka-server
-
-server:
-  port: 8761
 
 eureka:
   client:
@@ -11,3 +11,18 @@ eureka:
     fetch-registry: false
   server:
     enable-self-preservation: false
+    eviction-interval-timer-in-ms: 15000
+    renewal-percent-threshold: 0.85
+    renewal-threshold-update-interval-ms: 15000
+    response-cache-auto-expiration-in-seconds: 180
+    response-cache-update-interval-ms: 30000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+

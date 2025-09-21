@@ -1,8 +1,43 @@
+server:
+  port: 8081
+  tomcat:
+    socket:
+      so-linger: -1  # disable soLinger to fix SocketException
+
 spring:
   application:
     name: order-service
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: Order Service
+    description: Microservice for managing orders
+    version: 1.0.0
+  build:
+    artifact: order-service
+    group: org.example
+  contact:
+    team: Development Team
+    email: dev@example.com
+  environment: development
+
 eureka:
   client:
-    serviceUrl:
-      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 30
+    lease-expiration-duration-in-seconds: 90
