@@ -126,7 +126,7 @@ jobs:
           kubectl port-forward svc/user-service 8082:8082 &
           PF_PID=$!
           sleep 5
-          curl --fail http://localhost:8081/actuator/health
+          curl --fail http://localhost:8082/actuator/health
           kill $PF_PID
 
       - name: Post-deploy info (on failure only)
