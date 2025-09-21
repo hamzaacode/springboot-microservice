@@ -5,39 +5,88 @@ on:
     branches: [ main, kubernates-deployment-fix-2 ]
     paths:
       - 'user-service/**'
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'user-service/**'
+      - '.github/workflows/user-service-ci-cd.yml'
+      - 'shared/**'
+  workflow_dispatch:
+
+env:
+  SERVICE_DIR: user-service
+  IMAGE_TAG: user-service:latest
+  DEPLOY_DIR: user-service/k8s
+
+concurrency:
+  group: user-deploy
+  cancel-in-progress: true
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
-
-    env:
-      SERVICE_NAME: user-service
-      SERVICE_DIR: user-service
-      IMAGE_TAG: hamzaacode/user-service:latest
-      CONTAINER_NAME: user-service-container
-      HOST_PORT: 8082
-      CONTAINER_PORT: 8082
+    runs-on: self-hosted
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Ensure Minikube is running (robust)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          verify_minikube() {
+            minikube status >/dev/null 2>&1 && \
+            kubectl config use-context minikube >/dev/null 2>&1 && \
+            kubectl cluster-info >/dev/null 2>&1
+          }
+          echo "🔍 Checking Minikube status..."
+          if verify_minikube; then
+            echo "✅ Minikube is running and accessible"
+          else
+            echo "❌ Minikube is not accessible, attempting recovery..."
+            minikube stop || true
+            sleep 5
+            echo "🚀 Starting Minikube..."
+            minikube start \
+              --driver=docker \
+              --memory=4096 \
+              --cpus=2 \
+              --disk-size=20g \
+              --wait=true \
+              --timeout=10m
+            sleep 15
+            if verify_minikube; then
+              echo "✅ Minikube recovery successful"
+            else
+              echo "❌ Minikube recovery failed"
+              minikube logs || true
+              exit 1
+            fi
+          fi
+          kubectl config use-context minikube
+          kubectl get nodes
+          echo "🎉 Minikube is ready!"
+
+      - name: Configure Docker environment
+        shell: bash
+        run: |
+          set -euxo pipefail
+          eval $(minikube docker-env)
+          echo "DOCKER_HOST=$DOCKER_HOST" >> $GITHUB_ENV
+          echo "DOCKER_TLS_VERIFY=$DOCKER_TLS_VERIFY" >> $GITHUB_ENV
+          echo "DOCKER_CERT_PATH=$DOCKER_CERT_PATH" >> $GITHUB_ENV
+
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-m2
+      - name: Use persistent Maven repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /opt/maven-repo
+          rm -rf ~/.m2/repository
+          mkdir -p ~/.m2
+          ln -s /opt/maven-repo ~/.m2/repository
+          echo "✅ Using persistent Maven repo at /opt/maven-repo"
 
       - name: Build fat JAR (optimized)
         shell: bash
@@ -47,89 +96,48 @@ jobs:
           mvn clean package -DskipTests -T 1C --batch-mode --no-transfer-progress \
             -Dmaven.javadoc.skip=true -Dmaven.source.skip=true
 
-      - name: Build Docker image (fast)
+      - name: Build Docker image
         shell: bash
         env:
           DOCKER_BUILDKIT: 1
         run: |
           set -euxo pipefail
-          cd "$SERVICE_DIR"
-
-          # Create optimized Dockerfile
-          cat > Dockerfile.optimized << 'EOF'
-          FROM eclipse-temurin:17-jre
-          WORKDIR /app
-          COPY target/*.jar app.jar
-          EXPOSE 8082
-          ENTRYPOINT ["java", "-Xms256m", "-Xmx512m", "-server", "-jar", "app.jar"]
-          EOF
-
-          # Create .dockerignore
-          cat > .dockerignore << 'EOF'
-          target/classes
-          target/test-classes
-          .git
-          README.md
-          EOF
-
-          docker build -f Dockerfile.optimized \
+          docker build \
             --cache-from "$IMAGE_TAG" \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             -t "$IMAGE_TAG" \
-            .
-      
+            "$SERVICE_DIR"
 
-      - name: Stop and remove existing container
-        shell: bash
-        run: |
-          set +e
-          docker stop "$CONTAINER_NAME" 2>/dev/null || true
-          docker rm "$CONTAINER_NAME" 2>/dev/null || true
-          set -e
-
-      - name: Run new container
+      - name: Deploy to Kubernetes
         shell: bash
         run: |
           set -euxo pipefail
-          docker run -d \
-            --name "$CONTAINER_NAME" \
-            --network microservices-network \
-            -p "$HOST_PORT:$CONTAINER_PORT" \
-            --restart unless-stopped \
-            "$IMAGE_TAG"
-
-      - name: Verify deployment
-        shell: bash
-        run: |
-          set -euxo pipefail
-          echo "Waiting for user-service to start..."
-          sleep 30
-          
-          # Check if container is running
-          if ! docker ps | grep -q "$CONTAINER_NAME"; then
-            echo "Container is not running!"
-            docker logs "$CONTAINER_NAME"
-            exit 1
+          kubectl apply -f "$DEPLOY_DIR"
+          if kubectl get deployment user-deployment >/dev/null 2>&1; then
+            kubectl rollout restart deployment/user-deployment
           fi
-          
-          # Test health endpoint
-          if curl -f "http://localhost:$HOST_PORT/actuator/health"; then
-            echo "✅ User service is healthy!"
-          else
-            echo "❌ Health check failed!"
-            docker logs "$CONTAINER_NAME"
-            exit 1
-          fi
+          kubectl rollout status deployment/user-deployment --timeout=120s
 
-      - name: Test service endpoints
+      - name: Quick health check
         shell: bash
         run: |
           set -euxo pipefail
-          
-          # Test actuator info endpoint
-          echo "Testing actuator info endpoint..."
-          curl -f "http://localhost:$HOST_PORT/actuator/info" || echo "Info endpoint not accessible"
-          
-          # Test if service registers with Eureka (if eureka is running)
-          echo "Service deployed successfully!"
-          docker ps | grep "$CONTAINER_NAME"
+          kubectl wait --for=condition=ready pod -l app=user-service --timeout=180s
+          kubectl port-forward svc/user-service 8082:8082 &
+          PF_PID=$!
+          sleep 5
+          curl --fail http://localhost:8081/actuator/health
+          kill $PF_PID
+
+      - name: Post-deploy info (on failure only)
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== PODS ==="
+          kubectl get pods -o wide
+          echo "=== SERVICES ==="
+          kubectl get svc -o wide
+          echo "=== RECENT EVENTS ==="
+          kubectl get events --sort-by=.lastTimestamp | tail -n 10
+          echo "=== USER SERVICE LOGS ==="
+          kubectl logs -l app=user-service --tail=30
